@@ -2,13 +2,15 @@ use libloading::{Library, Symbol};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::ffi::c_void;
 use vst3::com_scrape_types::{Class, ComRef, ComWrapper};
+use vst3::Steinberg::Vst::BusInfo_::BusFlags_;
 use vst3::Steinberg::Vst::ProcessModes_::kRealtime;
 use vst3::Steinberg::Vst::SymbolicSampleSizes_::kSample32;
 use vst3::Steinberg::Vst::{
-    AudioBusBuffers, AudioBusBuffers__type0, Event__type0, IAudioProcessor, IAudioProcessorTrait,
-    IComponent, IComponentTrait, IConnectionPoint, IConnectionPointTrait, IEditController,
-    IEditControllerTrait, IHostApplication, IHostApplicationTrait, NoteOnEvent, ProcessData,
-    ProcessSetup, ViewType,
+    AudioBusBuffers, AudioBusBuffers__type0, BusDirections_, BusInfo, Event__type0,
+    IAudioProcessor, IAudioProcessorTrait, IComponent, IComponentTrait, IConnectionPoint,
+    IConnectionPointTrait, IEditController, IEditControllerTrait, IHostApplication,
+    IHostApplicationTrait, MediaTypes_, NoteOnEvent, ProcessData, ProcessSetup, SpeakerArr,
+    ViewType,
 };
 use vst3::Steinberg::{kNotImplemented, kResultOk, tresult};
 #[allow(unused_imports)]
@@ -24,6 +26,12 @@ fn extract_cstring(bytes: &[i8]) -> String {
     let len = bytes.iter().position(|&c| c == 0).unwrap_or(bytes.len());
     let u8_bytes: Vec<u8> = bytes[..len].iter().map(|&b| b as u8).collect();
     String::from_utf8_lossy(&u8_bytes).to_string()
+}
+
+fn extract_cstring_utf16(bytes: &[u16]) -> String {
+    let len = bytes.iter().position(|&c| c == 0).unwrap_or(bytes.len());
+    let u16_str: Vec<u16> = bytes[..len].iter().map(|&b| b as u16).collect();
+    String::from_utf16_lossy(&u16_str).to_string()
 }
 
 pub const BUF_SIZE: usize = 512;
@@ -186,11 +194,59 @@ impl Vst3Plugin {
         let res = unsafe { audio_processor.setupProcessing(&mut setup) };
         assert_eq!(res, kResultOk);
 
+        let res = unsafe {
+            audio_processor.setBusArrangements(
+                // input
+                std::ptr::null_mut(),
+                0,
+                // output
+                &SpeakerArr::kStereo as *const _ as *mut _,
+                1,
+            )
+        };
+        if res != kResultOk {
+            println!("Default stereo bus arrangement not accepted.");
+            let bus_count =
+                unsafe { component.getBusCount(MediaTypes_::kAudio, BusDirections_::kOutput) };
+
+            println!("Output bus count: {:?}", bus_count);
+
+            for i in 0..bus_count {
+                let mut bus_info: BusInfo = unsafe { std::mem::zeroed() };
+                let res = unsafe {
+                    component.getBusInfo(
+                        MediaTypes_::kAudio,
+                        BusDirections_::kOutput,
+                        i,
+                        &mut bus_info,
+                    )
+                };
+                assert_eq!(res, kResultOk);
+
+                println!(
+                    "bus: {i} name: {:?} channelCount: {:?} default: {:?}",
+                    extract_cstring_utf16(&bus_info.name),
+                    bus_info.channelCount,
+                    bus_info.flags & BusFlags_::kDefaultActive as u32 > 0,
+                );
+            }
+        }
+
+        // Activate bus 0
+        let res =
+            unsafe { component.activateBus(MediaTypes_::kAudio, BusDirections_::kOutput, 0, 1) };
+        assert_eq!(res, kResultOk);
+
         let res = unsafe { component.setActive(1) };
         assert_eq!(res, kResultOk);
 
         let res = unsafe { audio_processor.setProcessing(1) };
         assert_eq!(res, kResultOk);
+
+        // This may work for some plugins.
+        // let editor = component.cast::<IEditController>().unwrap_or_else(|| {
+        //     panic!("Processor does not implement IEditController directly.");
+        // });
 
         // Create the editor instance
         let mut editor_ptr: *mut c_void = std::ptr::null_mut();
@@ -203,14 +259,6 @@ impl Vst3Plugin {
         }
         let edit_controller =
             unsafe { ComPtr::from_raw(editor_ptr as *mut IEditController).unwrap() };
-
-        // This may work for some plugins.
-
-        // let editor = component
-        //     .cast::<IEditController>()
-        //     .unwrap_or_else(|| {
-        //         panic!("Processor does not implement IEditController directly.");
-        //     });
 
         let res = unsafe {
             // Some plugins require the editor to be initialized with the host context too
@@ -273,6 +321,8 @@ impl Vst3Plugin {
         assert_eq!(res, kResultOk);
 
         let frame_obj = ComWrapper::new(PluginFrame);
+
+        // TODO: frame is dropped when it goes out of scope
         let frame_ptr = frame_obj.to_com_ptr::<IPlugFrame>().unwrap();
 
         let res = unsafe { plug_view.setFrame(frame_ptr.as_ptr() as *mut IPlugFrame) };

@@ -7,7 +7,9 @@ use winit::window::{Window, WindowId};
 
 mod vst;
 
-const PATH: &str = r"C:\Program Files\Common Files\VST3\Pianoteq 7.vst3";
+// const PATH: &str = r"C:\Program Files\Common Files\VST3\Pianoteq 7.vst3";
+// const PATH: &str = r"C:\Program Files\Common Files\VST3\Vital.vst3";
+const PATH: &str = r"C:\Program Files\Common Files\VST3\Surge Synth Team\Surge XT.vst3\Contents\x86_64-win\Surge XT.vst3";
 
 #[derive(Default)]
 struct App {
@@ -56,8 +58,9 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                self.window.as_ref().unwrap().request_redraw();
+                // do not call request_redraw here!
             }
+
             _ => (),
         }
     }
