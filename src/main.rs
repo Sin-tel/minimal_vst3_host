@@ -1,9 +1,5 @@
-use crate::vst::PluginFrame;
-use raw_window_handle::HasWindowHandle;
-use raw_window_handle::RawWindowHandle;
-use std::ffi::c_void;
-use vst3::ComWrapper;
-use vst3::Steinberg::{kPlatformTypeHWND, kResultOk, IPlugFrame, IPlugViewTrait};
+use crate::vst::Vst3Plugin;
+use crate::vst::BUF_SIZE;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -24,50 +20,32 @@ impl ApplicationHandler for App {
             .create_window(Window::default_attributes())
             .unwrap();
 
-        let raw_window_handle = window.window_handle().ok().map(|wh| wh.as_raw()).unwrap();
+        let mut plugin = Vst3Plugin::load(PATH).unwrap();
 
-        let (system_window_handle, platform_type) = match raw_window_handle {
-            RawWindowHandle::Win32(handle) => (handle.hwnd.get() as *mut c_void, kPlatformTypeHWND),
-            _ => panic!("Unsupported platform."),
-        };
+        let _ = plugin.open_window(&window);
 
-        let (lib, processor, editor) = vst::init_plugin(PATH);
-        std::mem::forget(lib);
+        std::thread::spawn(move || {
+            // Fake audio thread
+            let mut left_buf = [0.; BUF_SIZE];
+            let mut right_buf = [0.; BUF_SIZE];
 
-        let plugin_view = vst::get_view(&editor);
+            loop {
+                left_buf.fill(0.);
+                right_buf.fill(0.);
+                plugin.process(&mut left_buf, &mut right_buf);
 
-        let frame_obj = ComWrapper::new(PluginFrame);
-        let frame_ptr = frame_obj.to_com_ptr::<IPlugFrame>().unwrap();
+                // check if we wrote anything to the buffer
+                let mut sum = 0.0;
+                for s in left_buf.iter() {
+                    sum += s.abs();
+                }
+                if sum > 0.1 {
+                    println!("Sum of absolute audio output: {}", sum);
+                }
 
-        std::mem::forget(frame_obj);
-
-        let res = unsafe { plugin_view.setFrame(frame_ptr.as_ptr() as *mut IPlugFrame) };
-        assert_eq!(res, kResultOk);
-
-        let res = unsafe { plugin_view.attached(system_window_handle, platform_type) };
-        assert_eq!(res, kResultOk);
-
-        let mut view_rect = vst3::Steinberg::ViewRect {
-            left: 0,
-            top: 0,
-            right: 0,
-            bottom: 0,
-        };
-        unsafe {
-            if plugin_view.getSize(&mut view_rect) == kResultOk {
-                let width = (view_rect.right - view_rect.left) as f64;
-                let height = (view_rect.bottom - view_rect.top) as f64;
-                let _ = window.request_inner_size(winit::dpi::LogicalSize::new(width, height));
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
-        }
-
-        std::thread::spawn(move || loop {
-            vst::fake_process(&processor);
-            std::thread::sleep(std::time::Duration::from_millis(10));
         });
-
-        std::mem::forget(editor);
-        std::mem::forget(plugin_view);
 
         self.window = Some(window);
     }
@@ -75,7 +53,6 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
-                println!("The close button was pressed; stopping");
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
