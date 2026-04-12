@@ -2,6 +2,7 @@ use crate::util::extract_cstring;
 use crate::vst::Vst3Library;
 use std::fs;
 use std::path::{Path, PathBuf};
+use vst3::Steinberg::kResultOk;
 
 #[derive(Debug, Clone)]
 #[allow(unused)]
@@ -28,19 +29,18 @@ use vst3::Steinberg::{
 pub fn probe_vst3(library_path: &Path) -> Result<Vec<PluginDescriptor>, String> {
     let mut descriptors = Vec::new();
 
-    // Load library temporarily
     let lib = Vst3Library::new(library_path)?;
-
     let factory_ptr = lib.get_factory()?;
 
-    // Need factory2 for category info
+    // Need factory2 for subcategory info
     let factory = unsafe { ComRef::<IPluginFactory2>::from_raw(factory_ptr as *mut _).unwrap() };
 
     let class_count = unsafe { factory.countClasses() };
 
     for i in 0..class_count {
         let mut class_info: PClassInfo = unsafe { std::mem::zeroed() };
-        if unsafe { factory.getClassInfo(i, &mut class_info) } == vst3::Steinberg::kResultOk {
+        let res = unsafe { factory.getClassInfo(i, &mut class_info) };
+        if res == kResultOk {
             let category = extract_cstring(&class_info.category);
 
             if category == "Audio Module Class" {
@@ -49,9 +49,8 @@ pub fn probe_vst3(library_path: &Path) -> Result<Vec<PluginDescriptor>, String> 
                 let mut sub_category = category.clone();
 
                 let mut class_info2: PClassInfo2 = unsafe { std::mem::zeroed() };
-                if unsafe { factory.getClassInfo2(i, &mut class_info2) }
-                    == vst3::Steinberg::kResultOk
-                {
+                let res = unsafe { factory.getClassInfo2(i, &mut class_info2) };
+                if res == kResultOk {
                     sub_category = extract_cstring(&class_info2.subCategories);
                     is_instrument = sub_category.contains("Instrument");
                 }

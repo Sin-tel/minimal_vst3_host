@@ -1,9 +1,10 @@
-use std::path::Path;
+use crate::error::ToResultExt;
 use crate::event::EventQueue;
 use crate::util::{extract_cstring, extract_cstring_utf16};
 use libloading::{Library, Symbol};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::ffi::c_void;
+use std::path::Path;
 use std::sync::Arc;
 use vst3::Steinberg::Vst::BusInfo_::BusFlags_;
 use vst3::Steinberg::Vst::ProcessModes_::kRealtime;
@@ -148,7 +149,6 @@ pub fn load(path: &Path) -> Result<(Vst3Editor, Vst3Processor), String> {
         let mut class_info: PClassInfo = unsafe { std::mem::zeroed() };
 
         let res = unsafe { factory.getClassInfo(i, &mut class_info) };
-
         if res == kResultOk {
             let name = extract_cstring(&class_info.name);
             let category = extract_cstring(&class_info.category);
@@ -181,8 +181,8 @@ pub fn load(path: &Path) -> Result<(Vst3Editor, Vst3Processor), String> {
     let component = unsafe { ComPtr::from_raw(component_ptr as *mut IComponent).unwrap() };
 
     // Initialize the plugin
-    let res = unsafe { component.initialize(host_ptr.as_ptr() as *mut vst3::Steinberg::FUnknown) };
-    assert_eq!(res, kResultOk);
+    unsafe { component.initialize(host_ptr.as_ptr() as *mut vst3::Steinberg::FUnknown) }
+        .as_result()?;
 
     // Query the IAudioProcessor interface
     let audio_processor = component
@@ -197,8 +197,7 @@ pub fn load(path: &Path) -> Result<(Vst3Editor, Vst3Processor), String> {
         sampleRate: SAMPLE_RATE,
     };
 
-    let res = unsafe { audio_processor.setupProcessing(&mut setup) };
-    assert_eq!(res, kResultOk);
+    unsafe { audio_processor.setupProcessing(&mut setup) }.as_result()?;
 
     let res = unsafe {
         audio_processor.setBusArrangements(
@@ -219,15 +218,15 @@ pub fn load(path: &Path) -> Result<(Vst3Editor, Vst3Processor), String> {
 
         for i in 0..bus_count {
             let mut bus_info: BusInfo = unsafe { std::mem::zeroed() };
-            let res = unsafe {
+            unsafe {
                 component.getBusInfo(
                     MediaTypes_::kAudio,
                     BusDirections_::kOutput,
                     i,
                     &mut bus_info,
                 )
-            };
-            assert_eq!(res, kResultOk);
+            }
+            .as_result()?;
 
             println!(
                 "bus: {i} name: {:?} channelCount: {:?} default: {:?}",
@@ -239,15 +238,12 @@ pub fn load(path: &Path) -> Result<(Vst3Editor, Vst3Processor), String> {
     }
 
     // Activate bus 0
-    let res = unsafe { component.activateBus(MediaTypes_::kAudio, BusDirections_::kOutput, 0, 1) };
-    assert_eq!(res, kResultOk);
+    unsafe { component.activateBus(MediaTypes_::kAudio, BusDirections_::kOutput, 0, 1) }
+        .as_result()?;
+    unsafe { component.setActive(1) }.as_result()?;
+    unsafe { audio_processor.setProcessing(1) }.as_result()?;
 
-    let res = unsafe { component.setActive(1) };
-    assert_eq!(res, kResultOk);
-
-    let res = unsafe { audio_processor.setProcessing(1) };
-    assert_eq!(res, kResultOk);
-
+    // TODO: try this first, only load seperately if failed
     // This may work for some plugins.
     // let editor = component.cast::<IEditController>().unwrap_or_else(|| {
     //     panic!("Processor does not implement IEditController directly.");
@@ -264,11 +260,9 @@ pub fn load(path: &Path) -> Result<(Vst3Editor, Vst3Processor), String> {
     }
     let edit_controller = unsafe { ComPtr::from_raw(editor_ptr as *mut IEditController).unwrap() };
 
-    let res = unsafe {
-        // Some plugins require the editor to be initialized with the host context too
-        edit_controller.initialize(host_ptr.as_ptr() as *mut vst3::Steinberg::FUnknown)
-    };
-    assert_eq!(res, kResultOk);
+    // Some plugins require the editor to be initialized with the host context too
+    unsafe { edit_controller.initialize(host_ptr.as_ptr() as *mut vst3::Steinberg::FUnknown) }
+        .as_result()?;
 
     // Attempt to cast both to IConnectionPoint
     // Should only be necessary if they are seperate components
@@ -277,10 +271,8 @@ pub fn load(path: &Path) -> Result<(Vst3Editor, Vst3Processor), String> {
 
     if let (Some(c1), Some(c2)) = (audio_connection, edit_connection) {
         unsafe {
-            let res1 = c1.connect(c2.as_ptr());
-            let res2 = c2.connect(c1.as_ptr());
-            assert_eq!(res1, kResultOk);
-            assert_eq!(res2, kResultOk);
+            c1.connect(c2.as_ptr()).as_result()?;
+            c2.connect(c1.as_ptr()).as_result()?;
         }
     } else {
         return Err("Plugin does not support IConnectionPoint".into());
@@ -328,16 +320,14 @@ impl Vst3Editor {
             _ => return Err("Unsupported platform.".into()),
         };
 
-        let res = unsafe { plug_view.attached(system_window_handle, platform_type) };
-        assert_eq!(res, kResultOk);
+        unsafe { plug_view.attached(system_window_handle, platform_type) }.as_result()?;
 
         let frame_obj = ComWrapper::new(PluginFrame);
 
         // TODO: frame is dropped when it goes out of scope
         let frame_ptr = frame_obj.to_com_ptr::<IPlugFrame>().unwrap();
 
-        let res = unsafe { plug_view.setFrame(frame_ptr.as_ptr()) };
-        assert_eq!(res, kResultOk);
+        unsafe { plug_view.setFrame(frame_ptr.as_ptr()) }.as_result()?;
 
         let mut view_rect = vst3::Steinberg::ViewRect {
             left: 0,
@@ -386,7 +376,11 @@ impl Vst3Processor {
 
         // Run processing
         let res = unsafe { self.audio_processor.process(&mut process_data) };
-        assert_eq!(res, kResultOk);
+
+        // Log error without panic
+        if let Err(e) = res.as_result() {
+            eprintln!("Audio processing failed: {}", e);
+        }
 
         // Clear the queue for the next call
         self.events.clear();

@@ -1,10 +1,11 @@
-use crate::vst::Vst3Editor;
 use crate::vst::BUF_SIZE;
+use crate::vst::Vst3Editor;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
+mod error;
 mod event;
 mod scan;
 mod util;
