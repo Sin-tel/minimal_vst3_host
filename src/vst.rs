@@ -1,4 +1,6 @@
+use std::path::Path;
 use crate::event::EventQueue;
+use crate::util::{extract_cstring, extract_cstring_utf16};
 use libloading::{Library, Symbol};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::ffi::c_void;
@@ -22,18 +24,6 @@ use vst3::Steinberg::{kPlatformTypeHWND, kPlatformTypeNSView, kPlatformTypeX11Em
 use vst3::com_scrape_types::{Class, ComRef, ComWrapper};
 use vst3::{ComPtr, Interface};
 use winit::window::Window;
-
-fn extract_cstring(bytes: &[i8]) -> String {
-    let len = bytes.iter().position(|&c| c == 0).unwrap_or(bytes.len());
-    let u8_bytes: Vec<u8> = bytes[..len].iter().map(|&b| b as u8).collect();
-    String::from_utf8_lossy(&u8_bytes).to_string()
-}
-
-fn extract_cstring_utf16(bytes: &[u16]) -> String {
-    let len = bytes.iter().position(|&c| c == 0).unwrap_or(bytes.len());
-    let u16_str: Vec<u16> = bytes[..len].to_vec();
-    String::from_utf16_lossy(&u16_str).to_string()
-}
 
 pub const BUF_SIZE: usize = 512;
 const SAMPLE_RATE: f64 = 44100.0;
@@ -67,6 +57,7 @@ impl Class for PluginFrame {
     type Interfaces = (IPlugFrame,);
 }
 
+// TODO: implement IRunLoopTrait on linux
 impl IPlugFrameTrait for PluginFrame {
     unsafe fn resizeView(
         &self,
@@ -85,7 +76,7 @@ pub struct Vst3Library {
 }
 
 impl Vst3Library {
-    pub fn new(path: &str) -> Result<Arc<Self>, String> {
+    pub fn new(path: &Path) -> Result<Arc<Self>, String> {
         let lib = unsafe { Library::new(path).map_err(|e| e.to_string())? };
 
         unsafe {
@@ -103,7 +94,9 @@ impl Vst3Library {
                 .get(c"GetPluginFactory")
                 .map_err(|e| e.to_string())?
         };
-        Ok(unsafe { get_factory() })
+        let factory_ptr = unsafe { get_factory() };
+        assert!(!factory_ptr.is_null());
+        Ok(factory_ptr)
     }
 }
 
@@ -136,7 +129,7 @@ pub struct Vst3Processor {
     lib: Arc<Vst3Library>,
 }
 
-pub fn load(path: &str) -> Result<(Vst3Editor, Vst3Processor), String> {
+pub fn load(path: &Path) -> Result<(Vst3Editor, Vst3Processor), String> {
     let lib = Vst3Library::new(path)?;
 
     // Get the factory

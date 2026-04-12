@@ -1,3 +1,9 @@
-Minimal example of how to load a VST plugin using [vst3-rs](https://github.com/coupler-rs/vst3-rs).
+Minimal example of how to load VST plugins using [vst3-rs](https://github.com/coupler-rs/vst3-rs).
 
-It can open the plugin GUI, send a note-on/off and process some audio buffers. Everything else is not implemented.
+Currently implemented:
+ * Scan default folders for vst3 plugins
+ * Open the plugin GUI window
+ * Send a note-on and note-off
+ * Process some audio buffers
+
+Everything else is not implemented.
