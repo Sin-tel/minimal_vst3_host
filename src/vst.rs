@@ -117,6 +117,7 @@ impl Drop for Vst3Library {
 #[allow(unused)]
 pub struct Vst3Editor {
     plug_view: Option<ComPtr<IPlugView>>,
+    frame: Option<ComPtr<IPlugFrame>>,
     edit_controller: ComPtr<IEditController>,
     host_context: ComWrapper<PluginHost>,
     lib: Arc<Vst3Library>,
@@ -280,6 +281,7 @@ pub fn load(path: &Path) -> Result<(Vst3Editor, Vst3Processor), String> {
 
     let editor = Vst3Editor {
         plug_view: None,
+        frame: None,
         edit_controller,
         host_context,
         lib: Arc::clone(&lib),
@@ -301,8 +303,6 @@ impl Vst3Editor {
             return Err("Plugin does not have a GUI!".into());
         }
 
-        let plug_view = unsafe { ComPtr::from_raw(view_ptr).unwrap() };
-
         let raw_window_handle = window.window_handle().ok().map(|wh| wh.as_raw()).unwrap();
 
         // Get platform specific handle
@@ -320,15 +320,17 @@ impl Vst3Editor {
             _ => return Err("Unsupported platform.".into()),
         };
 
+        // Attach handle
+        let plug_view = unsafe { ComPtr::from_raw(view_ptr).unwrap() };
         unsafe { plug_view.attached(system_window_handle, platform_type) }.as_result()?;
 
-        let frame_obj = ComWrapper::new(PluginFrame);
+        // Setup frame
+        let frame = ComWrapper::new(PluginFrame)
+            .to_com_ptr::<IPlugFrame>()
+            .unwrap();
+        unsafe { plug_view.setFrame(frame.as_ptr()) }.as_result()?;
 
-        // TODO: frame is dropped when it goes out of scope
-        let frame_ptr = frame_obj.to_com_ptr::<IPlugFrame>().unwrap();
-
-        unsafe { plug_view.setFrame(frame_ptr.as_ptr()) }.as_result()?;
-
+        // Set window to initial size
         let mut view_rect = vst3::Steinberg::ViewRect {
             left: 0,
             top: 0,
@@ -344,6 +346,7 @@ impl Vst3Editor {
         }
 
         self.plug_view = Some(plug_view);
+        self.frame = Some(frame);
         Ok(())
     }
 }
