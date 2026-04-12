@@ -1,25 +1,25 @@
+use crate::event::EventQueue;
 use libloading::{Library, Symbol};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::ffi::c_void;
 use std::sync::Arc;
-use vst3::com_scrape_types::{Class, ComRef, ComWrapper};
 use vst3::Steinberg::Vst::BusInfo_::BusFlags_;
 use vst3::Steinberg::Vst::ProcessModes_::kRealtime;
 use vst3::Steinberg::Vst::SymbolicSampleSizes_::kSample32;
 use vst3::Steinberg::Vst::{
-    AudioBusBuffers, AudioBusBuffers__type0, BusDirections_, BusInfo, Event__type0,
-    IAudioProcessor, IAudioProcessorTrait, IComponent, IComponentTrait, IConnectionPoint,
-    IConnectionPointTrait, IEditController, IEditControllerTrait, IHostApplication,
-    IHostApplicationTrait, MediaTypes_, NoteOnEvent, ProcessData, ProcessSetup, SpeakerArr,
-    ViewType,
+    AudioBusBuffers, AudioBusBuffers__type0, BusDirections_, BusInfo, IAudioProcessor,
+    IAudioProcessorTrait, IComponent, IComponentTrait, IConnectionPoint, IConnectionPointTrait,
+    IEditController, IEditControllerTrait, IHostApplication, IHostApplicationTrait, MediaTypes_,
+    ProcessData, ProcessSetup, SpeakerArr, ViewType,
 };
-use vst3::Steinberg::{kNotImplemented, kResultOk, tresult};
-#[allow(unused_imports)]
-use vst3::Steinberg::{kPlatformTypeHWND, kPlatformTypeNSView, kPlatformTypeX11EmbedWindowID};
 use vst3::Steinberg::{
     IPlugFrame, IPlugFrameTrait, IPlugView, IPlugViewTrait, IPluginBaseTrait, IPluginFactory,
     IPluginFactoryTrait, PClassInfo, ViewRect,
 };
+use vst3::Steinberg::{kNotImplemented, kResultOk, tresult};
+#[allow(unused_imports)]
+use vst3::Steinberg::{kPlatformTypeHWND, kPlatformTypeNSView, kPlatformTypeX11EmbedWindowID};
+use vst3::com_scrape_types::{Class, ComRef, ComWrapper};
 use vst3::{ComPtr, Interface};
 use winit::window::Window;
 
@@ -78,36 +78,6 @@ impl IPlugFrameTrait for PluginFrame {
     }
 }
 
-use vst3::Steinberg::Vst::{Event, IEventList, IEventListTrait};
-
-struct EventList {
-    events: Vec<Event>,
-}
-
-impl Class for EventList {
-    type Interfaces = (IEventList,);
-}
-
-impl IEventListTrait for EventList {
-    unsafe fn getEventCount(&self) -> i32 {
-        self.events.len() as i32
-    }
-
-    unsafe fn getEvent(&self, index: i32, event: *mut Event) -> tresult {
-        if index >= 0 && index < self.events.len() as i32 {
-            unsafe { *event = self.events[index as usize] };
-            kResultOk
-        } else {
-            vst3::Steinberg::kResultFalse
-        }
-    }
-
-    unsafe fn addEvent(&self, _event: *mut Event) -> tresult {
-        // The plugin doesn't call this on our input list, so we can ignore it
-        kResultOk
-    }
-}
-
 type GetPluginFactoryFunc = unsafe extern "system" fn() -> *mut vst3::Steinberg::FUnknown;
 
 pub struct Vst3Library {
@@ -160,6 +130,7 @@ pub struct Vst3Editor {
 
 #[allow(unused)]
 pub struct Vst3Processor {
+    pub events: EventQueue,
     audio_processor: ComPtr<IAudioProcessor>,
     component: ComPtr<IComponent>,
     lib: Arc<Vst3Library>,
@@ -329,6 +300,7 @@ pub fn load(path: &str) -> Result<(Vst3Editor, Vst3Processor), String> {
         lib: Arc::clone(&lib),
     };
     let processor = Vst3Processor {
+        events: EventQueue::new(),
         audio_processor,
         component,
         lib: Arc::clone(&lib),
@@ -394,25 +366,7 @@ impl Vst3Editor {
 }
 
 impl Vst3Processor {
-    pub fn process(&self, left_buf: &mut [f32], right_buf: &mut [f32]) {
-        // let mut note_on: Event = unsafe { std::mem::zeroed() };
-        // note_on.__field0 = Event__type0 {
-        //     noteOn: NoteOnEvent {
-        //         channel: 0,
-        //         pitch: 60,
-        //         tuning: 0.0,
-        //         velocity: 0.8,
-        //         length: 0,
-        //         noteId: 1,
-        //     },
-        // };
-
-        let event_list_obj = ComWrapper::new(EventList {
-            // events: vec![note_on],
-            events: vec![],
-        });
-        let event_list_ptr = event_list_obj.to_com_ptr::<IEventList>().unwrap();
-
+    pub fn process(&mut self, left_buf: &mut [f32], right_buf: &mut [f32]) {
         // VST3 wants a pointer to an array of channel pointers
         let mut channels = [left_buf.as_mut_ptr(), right_buf.as_mut_ptr()];
 
@@ -434,11 +388,14 @@ impl Vst3Processor {
         process_data.numOutputs = 1; // 1 stereo bus
         process_data.outputs = &mut output_bus;
 
-        // Input Events wiring
-        process_data.inputEvents = event_list_ptr.as_ptr() as *mut IEventList;
+        // Input events
+        process_data.inputEvents = self.events.as_com_ptr();
 
         // Run processing
         let res = unsafe { self.audio_processor.process(&mut process_data) };
         assert_eq!(res, kResultOk);
+
+        // Clear the queue for the next call
+        self.events.clear();
     }
 }

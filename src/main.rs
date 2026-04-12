@@ -5,6 +5,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
+mod event;
 mod vst;
 
 // const PATH: &str = r"C:\Program Files\Common Files\VST3\Pianoteq 7.vst3";
@@ -23,7 +24,7 @@ impl ApplicationHandler for App {
             .create_window(Window::default_attributes())
             .unwrap();
 
-        let (mut editor, processor) = vst::load(PATH).unwrap();
+        let (mut editor, mut processor) = vst::load(PATH).unwrap();
 
         let _ = editor.open_window(&window);
 
@@ -32,9 +33,19 @@ impl ApplicationHandler for App {
             let mut left_buf = [0.; BUF_SIZE];
             let mut right_buf = [0.; BUF_SIZE];
 
+            let mut counter = 0;
+
+            processor.events.push(event::note_on(0, 60, 0.0, 0.8));
+
             loop {
                 left_buf.fill(0.);
                 right_buf.fill(0.);
+
+                if counter == 100 {
+                    processor.events.push(event::note_off(0, 60, 0.0));
+                }
+                counter += 1;
+
                 processor.process(&mut left_buf, &mut right_buf);
 
                 // check if we wrote anything to the buffer
