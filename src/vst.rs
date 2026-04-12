@@ -31,7 +31,7 @@ fn extract_cstring(bytes: &[i8]) -> String {
 
 fn extract_cstring_utf16(bytes: &[u16]) -> String {
     let len = bytes.iter().position(|&c| c == 0).unwrap_or(bytes.len());
-    let u16_str: Vec<u16> = bytes[..len].iter().map(|&b| b as u16).collect();
+    let u16_str: Vec<u16> = bytes[..len].to_vec();
     String::from_utf16_lossy(&u16_str).to_string()
 }
 
@@ -284,8 +284,8 @@ pub fn load(path: &str) -> Result<(Vst3Editor, Vst3Processor), String> {
 
     if let (Some(c1), Some(c2)) = (audio_connection, edit_connection) {
         unsafe {
-            let res1 = c1.connect(c2.as_ptr() as *mut IConnectionPoint);
-            let res2 = c2.connect(c1.as_ptr() as *mut IConnectionPoint);
+            let res1 = c1.connect(c2.as_ptr());
+            let res2 = c2.connect(c1.as_ptr());
             assert_eq!(res1, kResultOk);
             assert_eq!(res2, kResultOk);
         }
@@ -316,7 +316,7 @@ impl Vst3Editor {
             return Err("Plugin does not have a GUI!".into());
         }
 
-        let plug_view = unsafe { ComPtr::from_raw(view_ptr as *mut IPlugView).unwrap() };
+        let plug_view = unsafe { ComPtr::from_raw(view_ptr).unwrap() };
 
         let raw_window_handle = window.window_handle().ok().map(|wh| wh.as_raw()).unwrap();
 
@@ -343,7 +343,7 @@ impl Vst3Editor {
         // TODO: frame is dropped when it goes out of scope
         let frame_ptr = frame_obj.to_com_ptr::<IPlugFrame>().unwrap();
 
-        let res = unsafe { plug_view.setFrame(frame_ptr.as_ptr() as *mut IPlugFrame) };
+        let res = unsafe { plug_view.setFrame(frame_ptr.as_ptr()) };
         assert_eq!(res, kResultOk);
 
         let mut view_rect = vst3::Steinberg::ViewRect {
