@@ -1,4 +1,4 @@
-use crate::vst::Vst3Plugin;
+use crate::vst::Vst3Editor;
 use crate::vst::BUF_SIZE;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -14,6 +14,7 @@ const PATH: &str = r"C:\Program Files\Common Files\VST3\Surge Synth Team\Surge X
 #[derive(Default)]
 struct App {
     window: Option<Window>,
+    editor: Option<Vst3Editor>,
 }
 
 impl ApplicationHandler for App {
@@ -22,9 +23,9 @@ impl ApplicationHandler for App {
             .create_window(Window::default_attributes())
             .unwrap();
 
-        let mut plugin = Vst3Plugin::load(PATH).unwrap();
+        let (mut editor, processor) = vst::load(PATH).unwrap();
 
-        let _ = plugin.open_window(&window);
+        let _ = editor.open_window(&window);
 
         std::thread::spawn(move || {
             // Fake audio thread
@@ -34,7 +35,7 @@ impl ApplicationHandler for App {
             loop {
                 left_buf.fill(0.);
                 right_buf.fill(0.);
-                plugin.process(&mut left_buf, &mut right_buf);
+                processor.process(&mut left_buf, &mut right_buf);
 
                 // check if we wrote anything to the buffer
                 let mut sum = 0.0;
@@ -50,6 +51,8 @@ impl ApplicationHandler for App {
         });
 
         self.window = Some(window);
+        // keep alive
+        self.editor = Some(editor);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {

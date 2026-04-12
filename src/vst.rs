@@ -1,6 +1,7 @@
 use libloading::{Library, Symbol};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::ffi::c_void;
+use std::sync::Arc;
 use vst3::com_scrape_types::{Class, ComRef, ComWrapper};
 use vst3::Steinberg::Vst::BusInfo_::BusFlags_;
 use vst3::Steinberg::Vst::ProcessModes_::kRealtime;
@@ -109,189 +110,234 @@ impl IEventListTrait for EventList {
 
 type GetPluginFactoryFunc = unsafe extern "system" fn() -> *mut vst3::Steinberg::FUnknown;
 
-#[allow(unused)]
-pub struct Vst3Plugin {
-    plug_view: Option<ComPtr<IPlugView>>,
-    edit_controller: ComPtr<IEditController>,
-    audio_processor: ComPtr<IAudioProcessor>,
-    component: ComPtr<IComponent>,
-    host_context: ComWrapper<PluginHost>,
+pub struct Vst3Library {
     lib: Library,
 }
 
-impl Vst3Plugin {
-    pub fn load(path: &str) -> Result<Self, String> {
-        let lib = unsafe { Library::new(path).unwrap() };
+impl Vst3Library {
+    pub fn new(path: &str) -> Result<Arc<Self>, String> {
+        let lib = unsafe { Library::new(path).map_err(|e| e.to_string())? };
 
-        // Get the factory
-        let get_factory: Symbol<GetPluginFactoryFunc> =
-            unsafe { lib.get(b"GetPluginFactory\0").unwrap() };
-        let factory_ptr = unsafe { get_factory() };
-
-        let factory = unsafe { ComRef::<IPluginFactory>::from_raw(factory_ptr as *mut _).unwrap() };
-
-        let class_count = unsafe { factory.countClasses() };
-        println!("Found {} classes in the VST3 bundle.", class_count);
-
-        let mut processor_cid: Option<[i8; 16]> = None;
-        let mut editor_cid: Option<[i8; 16]> = None;
-
-        for i in 0..class_count {
-            // Zero-initialize the struct that the factory will fill out
-            let mut class_info: PClassInfo = unsafe { std::mem::zeroed() };
-
-            let res = unsafe { factory.getClassInfo(i, &mut class_info) };
-
-            if res == kResultOk {
-                let name = extract_cstring(&class_info.name);
-                let category = extract_cstring(&class_info.category);
-                println!("Class {}: '{}' ({})", i, name, category);
-
-                if category == "Audio Module Class" {
-                    processor_cid = Some(class_info.cid);
-                } else if category == "Component Controller Class" {
-                    editor_cid = Some(class_info.cid);
-                }
-            }
-        }
-
-        let processor_id = processor_cid.expect("Could not find an Audio Module Class");
-        let editor_id = editor_cid.expect("Could not find an Component Controller Class");
-
-        // Create host context
-        let host_context = ComWrapper::new(PluginHost);
-        let host_ptr = host_context.to_com_ptr::<IHostApplication>().unwrap();
-
-        // Create the processor instance
-        let mut component_ptr: *mut c_void = std::ptr::null_mut();
         unsafe {
-            factory.createInstance(
-                processor_id.as_ptr(),
-                IComponent::IID.as_ptr() as *const i8,
-                &mut component_ptr,
-            );
-        }
-        let component = unsafe { ComPtr::from_raw(component_ptr as *mut IComponent).unwrap() };
-
-        // Initialize the plugin
-        let res =
-            unsafe { component.initialize(host_ptr.as_ptr() as *mut vst3::Steinberg::FUnknown) };
-        assert_eq!(res, kResultOk);
-
-        // Query the IAudioProcessor interface
-        let audio_processor = component
-            .cast::<IAudioProcessor>()
-            .expect("Component does not implement IAudioProcessor");
-
-        // Tell it about audio engine settings
-        let mut setup = ProcessSetup {
-            processMode: kRealtime,
-            symbolicSampleSize: kSample32,
-            maxSamplesPerBlock: BUF_SIZE as i32,
-            sampleRate: SAMPLE_RATE,
-        };
-
-        let res = unsafe { audio_processor.setupProcessing(&mut setup) };
-        assert_eq!(res, kResultOk);
-
-        let res = unsafe {
-            audio_processor.setBusArrangements(
-                // input
-                std::ptr::null_mut(),
-                0,
-                // output
-                &SpeakerArr::kStereo as *const _ as *mut _,
-                1,
-            )
-        };
-        if res != kResultOk {
-            println!("Default stereo bus arrangement not accepted.");
-            let bus_count =
-                unsafe { component.getBusCount(MediaTypes_::kAudio, BusDirections_::kOutput) };
-
-            println!("Output bus count: {:?}", bus_count);
-
-            for i in 0..bus_count {
-                let mut bus_info: BusInfo = unsafe { std::mem::zeroed() };
-                let res = unsafe {
-                    component.getBusInfo(
-                        MediaTypes_::kAudio,
-                        BusDirections_::kOutput,
-                        i,
-                        &mut bus_info,
-                    )
-                };
-                assert_eq!(res, kResultOk);
-
-                println!(
-                    "bus: {i} name: {:?} channelCount: {:?} default: {:?}",
-                    extract_cstring_utf16(&bus_info.name),
-                    bus_info.channelCount,
-                    bus_info.flags & BusFlags_::kDefaultActive as u32 > 0,
-                );
+            if let Ok(init_dll) = lib.get::<unsafe extern "system" fn() -> bool>(c"InitDll") {
+                init_dll();
             }
         }
 
-        // Activate bus 0
-        let res =
-            unsafe { component.activateBus(MediaTypes_::kAudio, BusDirections_::kOutput, 0, 1) };
-        assert_eq!(res, kResultOk);
-
-        let res = unsafe { component.setActive(1) };
-        assert_eq!(res, kResultOk);
-
-        let res = unsafe { audio_processor.setProcessing(1) };
-        assert_eq!(res, kResultOk);
-
-        // This may work for some plugins.
-        // let editor = component.cast::<IEditController>().unwrap_or_else(|| {
-        //     panic!("Processor does not implement IEditController directly.");
-        // });
-
-        // Create the editor instance
-        let mut editor_ptr: *mut c_void = std::ptr::null_mut();
-        unsafe {
-            factory.createInstance(
-                editor_id.as_ptr(),
-                IEditController::IID.as_ptr() as *const i8,
-                &mut editor_ptr,
-            );
-        }
-        let edit_controller =
-            unsafe { ComPtr::from_raw(editor_ptr as *mut IEditController).unwrap() };
-
-        let res = unsafe {
-            // Some plugins require the editor to be initialized with the host context too
-            edit_controller.initialize(host_ptr.as_ptr() as *mut vst3::Steinberg::FUnknown)
-        };
-        assert_eq!(res, kResultOk);
-
-        // Attempt to cast both to IConnectionPoint
-        // Should only be necessary if they are seperate components
-        let audio_connection = audio_processor.cast::<IConnectionPoint>();
-        let edit_connection = edit_controller.cast::<IConnectionPoint>();
-
-        if let (Some(c1), Some(c2)) = (audio_connection, edit_connection) {
-            unsafe {
-                let res1 = c1.connect(c2.as_ptr() as *mut IConnectionPoint);
-                let res2 = c2.connect(c1.as_ptr() as *mut IConnectionPoint);
-                assert_eq!(res1, kResultOk);
-                assert_eq!(res2, kResultOk);
-            }
-        } else {
-            return Err("Plugin does not support IConnectionPoint".into());
-        }
-
-        Ok(Self {
-            plug_view: None,
-            edit_controller,
-            audio_processor,
-            component,
-            host_context,
-            lib,
-        })
+        Ok(Arc::new(Self { lib }))
     }
 
+    pub fn get_factory(&self) -> Result<*mut vst3::Steinberg::FUnknown, String> {
+        let get_factory: Symbol<GetPluginFactoryFunc> = unsafe {
+            self.lib
+                .get(c"GetPluginFactory")
+                .map_err(|e| e.to_string())?
+        };
+        Ok(unsafe { get_factory() })
+    }
+}
+
+impl Drop for Vst3Library {
+    fn drop(&mut self) {
+        unsafe {
+            if let Ok(exit_dll) = self
+                .lib
+                .get::<unsafe extern "system" fn() -> bool>(c"ExitDll")
+            {
+                exit_dll();
+            }
+        }
+    }
+}
+
+#[allow(unused)]
+pub struct Vst3Editor {
+    plug_view: Option<ComPtr<IPlugView>>,
+    edit_controller: ComPtr<IEditController>,
+    host_context: ComWrapper<PluginHost>,
+    lib: Arc<Vst3Library>,
+}
+
+#[allow(unused)]
+pub struct Vst3Processor {
+    audio_processor: ComPtr<IAudioProcessor>,
+    component: ComPtr<IComponent>,
+    lib: Arc<Vst3Library>,
+}
+
+pub fn load(path: &str) -> Result<(Vst3Editor, Vst3Processor), String> {
+    let lib = Vst3Library::new(path)?;
+
+    // Get the factory
+    let factory_ptr = lib.get_factory()?;
+
+    let factory = unsafe { ComRef::<IPluginFactory>::from_raw(factory_ptr as *mut _).unwrap() };
+
+    let class_count = unsafe { factory.countClasses() };
+    println!("Found {} classes in the VST3 bundle.", class_count);
+
+    let mut processor_cid: Option<[i8; 16]> = None;
+    let mut editor_cid: Option<[i8; 16]> = None;
+
+    for i in 0..class_count {
+        // Zero-initialize the struct that the factory will fill out
+        let mut class_info: PClassInfo = unsafe { std::mem::zeroed() };
+
+        let res = unsafe { factory.getClassInfo(i, &mut class_info) };
+
+        if res == kResultOk {
+            let name = extract_cstring(&class_info.name);
+            let category = extract_cstring(&class_info.category);
+            println!("Class {}: '{}' ({})", i, name, category);
+
+            if category == "Audio Module Class" {
+                processor_cid = Some(class_info.cid);
+            } else if category == "Component Controller Class" {
+                editor_cid = Some(class_info.cid);
+            }
+        }
+    }
+
+    let processor_id = processor_cid.expect("Could not find an Audio Module Class");
+    let editor_id = editor_cid.expect("Could not find an Component Controller Class");
+
+    // Create host context
+    let host_context = ComWrapper::new(PluginHost);
+    let host_ptr = host_context.to_com_ptr::<IHostApplication>().unwrap();
+
+    // Create the processor instance
+    let mut component_ptr: *mut c_void = std::ptr::null_mut();
+    unsafe {
+        factory.createInstance(
+            processor_id.as_ptr(),
+            IComponent::IID.as_ptr() as *const i8,
+            &mut component_ptr,
+        );
+    }
+    let component = unsafe { ComPtr::from_raw(component_ptr as *mut IComponent).unwrap() };
+
+    // Initialize the plugin
+    let res = unsafe { component.initialize(host_ptr.as_ptr() as *mut vst3::Steinberg::FUnknown) };
+    assert_eq!(res, kResultOk);
+
+    // Query the IAudioProcessor interface
+    let audio_processor = component
+        .cast::<IAudioProcessor>()
+        .expect("Component does not implement IAudioProcessor");
+
+    // Tell it about audio engine settings
+    let mut setup = ProcessSetup {
+        processMode: kRealtime,
+        symbolicSampleSize: kSample32,
+        maxSamplesPerBlock: BUF_SIZE as i32,
+        sampleRate: SAMPLE_RATE,
+    };
+
+    let res = unsafe { audio_processor.setupProcessing(&mut setup) };
+    assert_eq!(res, kResultOk);
+
+    let res = unsafe {
+        audio_processor.setBusArrangements(
+            // input
+            std::ptr::null_mut(),
+            0,
+            // output
+            &SpeakerArr::kStereo as *const _ as *mut _,
+            1,
+        )
+    };
+    if res != kResultOk {
+        println!("Default stereo bus arrangement not accepted.");
+        let bus_count =
+            unsafe { component.getBusCount(MediaTypes_::kAudio, BusDirections_::kOutput) };
+
+        println!("Output bus count: {:?}", bus_count);
+
+        for i in 0..bus_count {
+            let mut bus_info: BusInfo = unsafe { std::mem::zeroed() };
+            let res = unsafe {
+                component.getBusInfo(
+                    MediaTypes_::kAudio,
+                    BusDirections_::kOutput,
+                    i,
+                    &mut bus_info,
+                )
+            };
+            assert_eq!(res, kResultOk);
+
+            println!(
+                "bus: {i} name: {:?} channelCount: {:?} default: {:?}",
+                extract_cstring_utf16(&bus_info.name),
+                bus_info.channelCount,
+                bus_info.flags & BusFlags_::kDefaultActive as u32 > 0,
+            );
+        }
+    }
+
+    // Activate bus 0
+    let res = unsafe { component.activateBus(MediaTypes_::kAudio, BusDirections_::kOutput, 0, 1) };
+    assert_eq!(res, kResultOk);
+
+    let res = unsafe { component.setActive(1) };
+    assert_eq!(res, kResultOk);
+
+    let res = unsafe { audio_processor.setProcessing(1) };
+    assert_eq!(res, kResultOk);
+
+    // This may work for some plugins.
+    // let editor = component.cast::<IEditController>().unwrap_or_else(|| {
+    //     panic!("Processor does not implement IEditController directly.");
+    // });
+
+    // Create the editor instance
+    let mut editor_ptr: *mut c_void = std::ptr::null_mut();
+    unsafe {
+        factory.createInstance(
+            editor_id.as_ptr(),
+            IEditController::IID.as_ptr() as *const i8,
+            &mut editor_ptr,
+        );
+    }
+    let edit_controller = unsafe { ComPtr::from_raw(editor_ptr as *mut IEditController).unwrap() };
+
+    let res = unsafe {
+        // Some plugins require the editor to be initialized with the host context too
+        edit_controller.initialize(host_ptr.as_ptr() as *mut vst3::Steinberg::FUnknown)
+    };
+    assert_eq!(res, kResultOk);
+
+    // Attempt to cast both to IConnectionPoint
+    // Should only be necessary if they are seperate components
+    let audio_connection = audio_processor.cast::<IConnectionPoint>();
+    let edit_connection = edit_controller.cast::<IConnectionPoint>();
+
+    if let (Some(c1), Some(c2)) = (audio_connection, edit_connection) {
+        unsafe {
+            let res1 = c1.connect(c2.as_ptr() as *mut IConnectionPoint);
+            let res2 = c2.connect(c1.as_ptr() as *mut IConnectionPoint);
+            assert_eq!(res1, kResultOk);
+            assert_eq!(res2, kResultOk);
+        }
+    } else {
+        return Err("Plugin does not support IConnectionPoint".into());
+    }
+
+    let editor = Vst3Editor {
+        plug_view: None,
+        edit_controller,
+        host_context,
+        lib: Arc::clone(&lib),
+    };
+    let processor = Vst3Processor {
+        audio_processor,
+        component,
+        lib: Arc::clone(&lib),
+    };
+
+    Ok((editor, processor))
+}
+
+impl Vst3Editor {
     pub fn open_window(&mut self, window: &Window) -> Result<(), String> {
         let view_ptr = unsafe { self.edit_controller.createView(ViewType::kEditor) };
         if view_ptr.is_null() {
@@ -345,7 +391,9 @@ impl Vst3Plugin {
         self.plug_view = Some(plug_view);
         Ok(())
     }
+}
 
+impl Vst3Processor {
     pub fn process(&self, left_buf: &mut [f32], right_buf: &mut [f32]) {
         // let mut note_on: Event = unsafe { std::mem::zeroed() };
         // note_on.__field0 = Event__type0 {
@@ -392,18 +440,5 @@ impl Vst3Plugin {
         // Run processing
         let res = unsafe { self.audio_processor.process(&mut process_data) };
         assert_eq!(res, kResultOk);
-    }
-}
-
-impl Drop for Vst3Plugin {
-    fn drop(&mut self) {
-        unsafe {
-            if let Ok(exit_dll) = self
-                .lib
-                .get::<unsafe extern "system" fn() -> bool>(b"ExitDll")
-            {
-                let _ = exit_dll();
-            }
-        }
     }
 }
