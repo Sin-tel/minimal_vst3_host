@@ -76,34 +76,40 @@ impl EventQueue {
 }
 
 pub fn note_on(channel: i16, pitch: i16, tuning: f32, velocity: f32) -> Event {
-    let mut event: Event = unsafe { std::mem::zeroed() };
-    event.r#type = EventTypes_::kNoteOnEvent as u16;
-    event.__field0 = Event__type0 {
-        noteOn: NoteOnEvent {
-            channel,
-            pitch,
-            tuning,
-            velocity,
-            length: 0,
-            noteId: -1,
+    Event {
+        busIndex: 0,
+        sampleOffset: 0,
+        ppqPosition: 0.0,
+        flags: 0,
+        r#type: EventTypes_::kNoteOnEvent as u16,
+        __field0: Event__type0 {
+            noteOn: NoteOnEvent {
+                channel,
+                pitch,
+                tuning,
+                velocity,
+                length: 0,
+                noteId: -1,
+            },
         },
-    };
-
-    event
+    }
 }
 
 pub fn note_off(channel: i16, pitch: i16, velocity: f32) -> Event {
-    let mut event: Event = unsafe { std::mem::zeroed() };
-    event.r#type = EventTypes_::kNoteOffEvent as u16;
-    event.__field0 = Event__type0 {
-        noteOff: NoteOffEvent {
-            channel,
-            pitch,
-            velocity,
-            tuning: 0.0,
-            noteId: -1,
+    Event {
+        busIndex: 0,
+        sampleOffset: 0,
+        ppqPosition: 0.0,
+        flags: 0,
+        r#type: EventTypes_::kNoteOffEvent as u16,
+        __field0: Event__type0 {
+            noteOff: NoteOffEvent {
+                channel,
+                pitch,
+                velocity,
+                tuning: 0.0,
+                noteId: -1,
+            },
         },
-    };
-
-    event
+    }
 }

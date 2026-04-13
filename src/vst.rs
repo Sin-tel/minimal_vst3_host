@@ -342,17 +342,30 @@ impl Vst3Processor {
         };
 
         // Populate buffer process data
-        let mut process_data: ProcessData = unsafe { std::mem::zeroed() };
-        process_data.processMode = kRealtime;
-        process_data.symbolicSampleSize = kSample32;
-        process_data.numSamples = BUF_SIZE as i32;
+        let mut process_data = ProcessData {
+            processMode: kRealtime,
+            symbolicSampleSize: kSample32,
+            numSamples: BUF_SIZE as i32,
 
-        // Output wiring
-        process_data.numOutputs = 1; // 1 stereo bus
-        process_data.outputs = &mut output_bus;
+            // Audio input
+            numInputs: 0,
+            inputs: std::ptr::null_mut(),
 
-        // Input events
-        process_data.inputEvents = self.events.as_com_ptr();
+            // Audio output
+            numOutputs: 1, // 1 stereo bus
+            outputs: &mut output_bus,
+
+            // Events
+            inputEvents: self.events.as_com_ptr(),
+            outputEvents: std::ptr::null_mut(),
+
+            // Parameters
+            inputParameterChanges: std::ptr::null_mut(),
+            outputParameterChanges: std::ptr::null_mut(),
+
+            // Optional according to docs, but might be required for some plugins to work properly
+            processContext: std::ptr::null_mut(),
+        };
 
         // Run processing
         let res = unsafe { self.audio_processor.process(&mut process_data) };
