@@ -7,3 +7,6 @@ Currently implemented:
  * Process some audio buffers
 
 Everything else is not implemented.
+
+
+See also: [https://github.com/m-hilgendorf/vst3-host-demo]

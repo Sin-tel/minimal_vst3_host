@@ -1,29 +1,23 @@
+use crate::error::ToResultExt;
 use crate::util::extract_cstring;
 use crate::vst::Vst3Library;
 use std::fs;
+use std::mem::MaybeUninit;
 use std::path::{Path, PathBuf};
-use vst3::Steinberg::kResultOk;
+use vst3::ComRef;
+use vst3::Steinberg::{
+    IPluginFactory, IPluginFactory2, IPluginFactory2Trait, IPluginFactoryTrait, PClassInfo2,
+};
 
 #[derive(Debug, Clone)]
 #[allow(unused)]
 pub struct PluginDescriptor {
     pub name: String,
     pub category: String,
-    pub format: PluginFormat,
     pub is_instrument: bool,
+    pub processor_cid: [i8; 16],
     pub library_path: PathBuf,
 }
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum PluginFormat {
-    Vst3,
-    // Clap, Vst2, Au, etc.
-}
-
-use vst3::ComRef;
-use vst3::Steinberg::{
-    IPluginFactory2, IPluginFactory2Trait, IPluginFactoryTrait, PClassInfo, PClassInfo2,
-};
 
 /// Load a VST3 dynamic library to extract its plugin descriptors.
 pub fn probe_vst3(library_path: &Path) -> Result<Vec<PluginDescriptor>, String> {
@@ -32,34 +26,34 @@ pub fn probe_vst3(library_path: &Path) -> Result<Vec<PluginDescriptor>, String> 
     let lib = Vst3Library::new(library_path)?;
     let factory_ptr = lib.get_factory()?;
 
-    // Need factory2 for subcategory info
-    let factory = unsafe { ComRef::<IPluginFactory2>::from_raw(factory_ptr as *mut _).unwrap() };
+    let factory = unsafe { ComRef::<IPluginFactory>::from_raw(factory_ptr as *mut _).unwrap() };
+
+    // We need factory2 for subcategory info.
+    // For now, we just fail if it doesn't exist, but better to implement some fallback.
+    let factory = factory
+        .cast::<IPluginFactory2>()
+        .ok_or("Plugin doesn't support factory2.")?;
 
     let class_count = unsafe { factory.countClasses() };
 
     for i in 0..class_count {
-        let mut class_info: PClassInfo = unsafe { std::mem::zeroed() };
-        let res = unsafe { factory.getClassInfo(i, &mut class_info) };
-        if res == kResultOk {
-            let category = extract_cstring(&class_info.category);
-
+        let mut info = MaybeUninit::<PClassInfo2>::uninit();
+        if unsafe { factory.getClassInfo2(i, info.as_mut_ptr()) }
+            .as_result()
+            .is_ok()
+        {
+            let info = unsafe { info.assume_init() };
+            let category = extract_cstring(&info.category);
             if category == "Audio Module Class" {
-                let name = extract_cstring(&class_info.name);
-                let mut is_instrument = false;
-                let mut sub_category = category.clone();
-
-                let mut class_info2: PClassInfo2 = unsafe { std::mem::zeroed() };
-                let res = unsafe { factory.getClassInfo2(i, &mut class_info2) };
-                if res == kResultOk {
-                    sub_category = extract_cstring(&class_info2.subCategories);
-                    is_instrument = sub_category.contains("Instrument");
-                }
-
+                let name = extract_cstring(&info.name);
+                let sub_categories = extract_cstring(&info.subCategories);
+                let processor_cid = info.cid;
+                let is_instrument = sub_categories.contains("Instrument");
                 descriptors.push(PluginDescriptor {
                     name,
-                    category: sub_category,
-                    format: PluginFormat::Vst3,
+                    category: sub_categories,
                     is_instrument,
+                    processor_cid,
                     library_path: library_path.to_path_buf(),
                 });
             }
