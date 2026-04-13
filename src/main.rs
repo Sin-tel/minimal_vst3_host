@@ -66,7 +66,7 @@ fn main() {
         }
     }
 
-    let plugin = to_load.expect(&format!("No plugin matching \"{PLUGIN_NAME}\" found."));
+    let plugin = to_load.unwrap_or_else(|| panic!("No plugin matching \"{PLUGIN_NAME}\" found."));
 
     println!("Loading: {:?}", plugin.name);
     let (editor, mut processor) = vst::load(plugin).unwrap();
